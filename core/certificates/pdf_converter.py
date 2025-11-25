@@ -284,44 +284,6 @@ class PDFConverter:
         
         return results
     
-    @staticmethod
-    def cleanup_word_files(folder: str, 
-                          keep_list: Optional[List[str]] = None) -> int:
-        """
-        Elimina archivos .docx de una carpeta.
-        
-        Args:
-            folder: Carpeta con archivos Word
-            keep_list: Lista de nombres de archivo a preservar (opcional)
-            
-        Returns:
-            Cantidad de archivos eliminados
-        """
-        if not os.path.exists(folder):
-            return 0
-        
-        keep_set = set(keep_list) if keep_list else set()
-        deleted_count = 0
-        
-        # Listar archivos .docx
-        word_files = [f for f in os.listdir(folder) 
-                     if f.lower().endswith('.docx') and not f.startswith('~$')]
-        
-        for word_file in word_files:
-            # Saltar si está en la lista de preservación
-            if word_file in keep_set:
-                continue
-            
-            try:
-                word_path = os.path.join(folder, word_file)
-                os.remove(word_path)
-                deleted_count += 1
-            except Exception as e:
-                # Ignorar errores de eliminación
-                pass
-        
-        return deleted_count
-    
     def get_system_info(self) -> Dict[str, str]:
         """
         Retorna información del sistema para debugging.
