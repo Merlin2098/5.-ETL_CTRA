@@ -1,0 +1,29 @@
+{
+  "app": {
+    "name": "Sistema de Certificados",
+    "version": "1.0.0",
+    "theme": "light"
+  },
+  "etl": {
+    "batch_size": 1000,
+    "encoding": "utf-8",
+    "validation_rules": {
+      "required_columns": [
+        "apellido_paterno",
+        "apellido_materno",
+        "nombres"
+      ]
+    }
+  },
+  "certificates": {
+    "batch_size": 50,
+    "retry_attempts": 3,
+    "cpu_limit_percent": 50
+  },
+  "paths": {
+    "raw_folder": "data/raw",
+    "clean_folder": "data/clean",
+    "output_folder": "data/output",
+    "templates_folder": "data/templates"
+  }
+}

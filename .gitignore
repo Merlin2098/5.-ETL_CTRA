@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data folders (excepto .gitkeep)
+data/raw/*
+!data/raw/.gitkeep
+data/clean/*
+!data/clean/.gitkeep
+data/correspondencia/*
+!data/correspondencia/.gitkeep
+data/output/*
+!data/output/.gitkeep
+
+# Logs
+logs/**/*.log
+logs/**/*.txt
+
+# Build
+build/
+dist/
+*.spec
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Script generador (opcional, descomentar si no quieres subirlo a Git)
+# generate_project_structure.py

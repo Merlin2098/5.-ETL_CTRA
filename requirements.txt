@@ -1,0 +1,27 @@
+# UI
+PyQt5
+pytest-qt
+# Data processing
+pandas
+openpyxl
+Pillow
+tqdm
+
+#PDF
+PyPDF2
+pymupdf
+reportlab
+
+# Document generation
+python-docx
+docx2pdf
+pywin32
+docxtpl
+
+# Utils
+python-dateutil
+pytest
+pyinstaller
+wheel
+packaging
+setuptools
