@@ -1,11 +1,12 @@
 """
 Controlador del módulo de certificados.
 Orquesta la interacción entre UI y core services con threading.
+Soporta filtros múltiples con selección en cascada.
 """
 
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import pandas as pd
 from PyQt5.QtCore import QObject, pyqtSignal, QThread
 
@@ -88,17 +89,22 @@ class CertificateWorker(QThread):
             self.error.emit(error_msg)
 
 class CertificatesController(QObject):
-    """Controlador para el módulo de certificados"""
+    """Controlador para el módulo de certificados con filtros múltiples"""
     
     # === SIGNALS ===
     # Emitidos hacia la UI
-    combo_dni_updated = pyqtSignal(list)  # Lista de DNIs
-    combo_cliente_updated = pyqtSignal(list)  # Lista de clientes
-    combo_mes_updated = pyqtSignal(list)  # Lista de meses
+    list_dni_updated = pyqtSignal(list)  # Lista de DNIs disponibles
+    list_cliente_updated = pyqtSignal(list)  # Lista de clientes disponibles
+    list_mes_updated = pyqtSignal(list)  # Lista de meses disponibles
+    
+    cliente_section_enabled = pyqtSignal(bool)  # Habilitar/deshabilitar sección Cliente
+    mes_section_enabled = pyqtSignal(bool)  # Habilitar/deshabilitar sección Mes
+    apply_button_enabled = pyqtSignal(bool)  # Habilitar/deshabilitar botón Aplicar
+    
     filter_applied = pyqtSignal(int)  # Cantidad de registros filtrados
     progress_updated = pyqtSignal(int, str, float)  # (porcentaje, mensaje, tiempo_restante)
     generation_completed = pyqtSignal(dict)  # Resultados finales
-    error_occurred = pyqtSignal(str)  # Mensaje de error
+    error_occurred = pyqtSignal(str, str)  # (título, mensaje)
     file_loaded = pyqtSignal(int, str)  # (cantidad_registros, ruta_archivo)
     
     def __init__(self):
@@ -110,11 +116,11 @@ class CertificatesController(QObject):
         self.df_filtered = None
         self.template_path = None
         self.output_folder = None
-        self.filter_criteria = {
-            'dni': None,
-            'cliente': None,
-            'mes': None
-        }
+        
+        # Almacenar selecciones múltiples
+        self.selected_dnis = []
+        self.selected_clientes = []
+        self.selected_meses = []
         
         # Core services
         self.data_filter = CertificateDataFilter()
@@ -125,14 +131,15 @@ class CertificatesController(QObject):
         # Logger modular
         self.logger = get_controller_logger("CertificatesController")
         self.logger.info("=" * 60)
-        self.logger.info("CertificatesController inicializado")
+        self.logger.info("CertificatesController inicializado (Filtros Múltiples)")
         self.logger.info("=" * 60)
     
     # === MÉTODOS PARA CARGA ===
     
     def load_clean_file(self, file_path: str) -> None:
         """
-        Carga archivo limpio y emite signal para combo DNI.
+        Carga archivo limpio y emite signal para lista DNI.
+        Estado inicial: todo desmarcado, solo DNI habilitado.
         
         Args:
             file_path: Ruta del archivo Excel limpio
@@ -144,7 +151,7 @@ class CertificatesController(QObject):
             if not FileUtils.is_valid_excel_file(file_path):
                 error_msg = "Archivo no válido. Debe ser .xlsx o .xls"
                 self.logger.error(error_msg)
-                self.error_occurred.emit(error_msg)
+                self.error_occurred.emit("Error de Archivo", error_msg)
                 return
             
             # Cargar datos
@@ -158,182 +165,285 @@ class CertificatesController(QObject):
             self.logger.info(f"Tamaño: {file_size}")
             self.logger.info(f"Columnas: {', '.join(self.df_original.columns)}")
             
-            # Obtener DNIs únicos
+            # Obtener DNIs únicos (sin "TODOS")
             dnis = self.data_filter.get_unique_dnis(self.df_original)
-            self.logger.info(f"DNIs únicos encontrados: {len(dnis) - 1}")  # -1 por "TODOS"
+            self.logger.info(f"DNIs únicos encontrados: {len(dnis)}")
             
-            # Emitir signal
-            self.combo_dni_updated.emit(dnis)
+            # Emitir signals - Estado inicial
+            self.list_dni_updated.emit(dnis)  # Poblar lista DNI
+            self.list_cliente_updated.emit([])  # Cliente vacío
+            self.list_mes_updated.emit([])  # Mes vacío
+            
+            # Deshabilitar secciones dependientes
+            self.cliente_section_enabled.emit(False)
+            self.mes_section_enabled.emit(False)
+            self.apply_button_enabled.emit(False)
+            
             self.file_loaded.emit(len(self.df_original), file_path)
             
-            # Reset filtros
-            self._reset_filter_criteria()
+            # Reset selecciones
+            self._reset_selections()
             
         except Exception as e:
             error_msg = f"Error al cargar archivo: {str(e)}"
             self.logger.error(error_msg, exception=e)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Carga", error_msg)
     
-    # === MÉTODOS PARA FILTROS (CASCADA) ===
+    # === MÉTODOS PARA FILTROS EN CASCADA ===
     
-    def on_dni_changed(self, dni: str) -> None:
+    def on_dni_selection_changed(self, selected_dnis: List[str]) -> None:
         """
-        Actualiza combo Cliente según DNI seleccionado.
+        Actualiza lista Cliente según DNIs seleccionados.
+        Se ejecuta cada vez que el usuario marca/desmarca DNIs.
         
         Args:
-            dni: DNI seleccionado
+            selected_dnis: Lista de DNIs seleccionados
         """
         if self.df_original is None:
             return
         
         try:
-            self.logger.info(f"DNI cambiado: {dni}")
-            self.filter_criteria['dni'] = dni
+            self.logger.info(f"DNIs seleccionados: {len(selected_dnis)}")
+            self.selected_dnis = selected_dnis
             
-            # Obtener clientes únicos según DNI
+            # Validar si hay al menos 1 DNI seleccionado
+            if len(selected_dnis) == 0:
+                # Deshabilitar todo
+                self.logger.info("Sin DNIs seleccionados - Deshabilitando cascada")
+                self.list_cliente_updated.emit([])
+                self.list_mes_updated.emit([])
+                self.cliente_section_enabled.emit(False)
+                self.mes_section_enabled.emit(False)
+                self.apply_button_enabled.emit(False)
+                
+                # Reset selecciones dependientes
+                self.selected_clientes = []
+                self.selected_meses = []
+                return
+            
+            # Obtener clientes únicos según DNIs seleccionados
             clientes = self.data_filter.get_unique_clients(
                 self.df_original,
-                dni_filter=dni
+                dni_filters=selected_dnis
             )
             
-            self.logger.info(f"Clientes disponibles: {len(clientes) - 1}")
+            self.logger.info(f"Clientes disponibles: {len(clientes)}")
             
-            # Emitir signal
-            self.combo_cliente_updated.emit(clientes)
+            # Emitir signal para actualizar lista Cliente
+            self.list_cliente_updated.emit(clientes)
+            self.cliente_section_enabled.emit(True)  # Habilitar sección Cliente
             
-            # Reset mes cuando cambia DNI
-            self.filter_criteria['mes'] = None
-            self.combo_mes_updated.emit(["TODOS"])
+            # Reset Mes (debe elegir clientes primero)
+            self.list_mes_updated.emit([])
+            self.mes_section_enabled.emit(False)
+            self.apply_button_enabled.emit(False)
+            
+            self.selected_clientes = []
+            self.selected_meses = []
             
         except Exception as e:
             error_msg = f"Error al actualizar clientes: {str(e)}"
             self.logger.error(error_msg, exception=e)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Filtro", error_msg)
     
-    def on_cliente_changed(self, dni: str, cliente: str) -> None:
+    def on_cliente_selection_changed(self, selected_clientes: List[str]) -> None:
         """
-        Actualiza combo Mes según DNI y Cliente.
+        Actualiza lista Mes según Clientes seleccionados.
         
         Args:
-            dni: DNI seleccionado
-            cliente: Cliente seleccionado
+            selected_clientes: Lista de Clientes seleccionados
         """
-        if self.df_original is None:
+        if self.df_original is None or len(self.selected_dnis) == 0:
             return
         
         try:
-            self.logger.info(f"Cliente cambiado: {cliente}")
-            self.filter_criteria['cliente'] = cliente
+            self.logger.info(f"Clientes seleccionados: {len(selected_clientes)}")
+            self.selected_clientes = selected_clientes
             
-            # Obtener meses únicos según DNI y Cliente
+            # Validar si hay al menos 1 Cliente seleccionado
+            if len(selected_clientes) == 0:
+                self.logger.info("Sin Clientes seleccionados - Deshabilitando Mes")
+                self.list_mes_updated.emit([])
+                self.mes_section_enabled.emit(False)
+                self.apply_button_enabled.emit(False)
+                
+                self.selected_meses = []
+                return
+            
+            # Obtener meses únicos según DNIs + Clientes seleccionados
             meses = self.data_filter.get_unique_months(
                 self.df_original,
-                dni_filter=dni,
-                client_filter=cliente
+                dni_filters=self.selected_dnis,
+                client_filters=selected_clientes
             )
             
-            self.logger.info(f"Meses disponibles: {len(meses) - 1}")
+            self.logger.info(f"Meses disponibles: {len(meses)}")
             
-            # Emitir signal
-            self.combo_mes_updated.emit(meses)
+            # Emitir signal para actualizar lista Mes
+            self.list_mes_updated.emit(meses)
+            self.mes_section_enabled.emit(True)  # Habilitar sección Mes
+            
+            # Botón Aplicar sigue deshabilitado hasta que seleccione meses
+            self.apply_button_enabled.emit(False)
+            self.selected_meses = []
             
         except Exception as e:
             error_msg = f"Error al actualizar meses: {str(e)}"
             self.logger.error(error_msg, exception=e)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Filtro", error_msg)
     
-    def apply_filter(self, dni: str, cliente: str, mes: str) -> None:
+    def on_mes_selection_changed(self, selected_meses: List[str]) -> None:
         """
-        Aplica filtro y emite cantidad de registros.
+        Valida selección de Meses y habilita/deshabilita botón Aplicar.
         
         Args:
-            dni: DNI seleccionado
-            cliente: Cliente seleccionado
-            mes: Mes seleccionado
+            selected_meses: Lista de Meses seleccionados
         """
         if self.df_original is None:
             return
         
         try:
-            self.logger.info("Aplicando filtro...")
-            self.logger.info(f"  DNI: {dni}")
-            self.logger.info(f"  Cliente: {cliente}")
-            self.logger.info(f"  Mes: {mes}")
+            self.logger.info(f"Meses seleccionados: {len(selected_meses)}")
+            self.selected_meses = selected_meses
             
-            # Actualizar criterios
-            self.filter_criteria['dni'] = dni
-            self.filter_criteria['cliente'] = cliente
-            self.filter_criteria['mes'] = mes
+            # Validar si hay al menos 1 Mes seleccionado
+            if len(selected_meses) == 0:
+                self.logger.info("Sin Meses seleccionados - Deshabilitando Aplicar")
+                self.apply_button_enabled.emit(False)
+                return
             
-            # Aplicar filtro
+            # Validación completa: DNI, Cliente, Mes con selecciones
+            if (len(self.selected_dnis) > 0 and 
+                len(self.selected_clientes) > 0 and 
+                len(self.selected_meses) > 0):
+                
+                self.logger.info("Todos los filtros tienen selecciones - Habilitando Aplicar")
+                self.apply_button_enabled.emit(True)
+            else:
+                self.apply_button_enabled.emit(False)
+            
+        except Exception as e:
+            error_msg = f"Error al validar meses: {str(e)}"
+            self.logger.error(error_msg, exception=e)
+            self.error_occurred.emit("Error de Validación", error_msg)
+    
+    def apply_filters(self) -> None:
+        """
+        Aplica los filtros combinados y emite signal con cantidad de registros.
+        Solo se ejecuta cuando el usuario presiona "Aplicar Filtros".
+        """
+        if self.df_original is None:
+            return
+        
+        try:
+            self.logger.info("=" * 60)
+            self.logger.info("APLICANDO FILTROS COMBINADOS")
+            self.logger.info("=" * 60)
+            self.logger.info(f"DNIs: {len(self.selected_dnis)} seleccionados")
+            self.logger.info(f"Clientes: {len(self.selected_clientes)} seleccionados")
+            self.logger.info(f"Meses: {len(self.selected_meses)} seleccionados")
+            
+            # Aplicar filtro con listas
             self.df_filtered = self.data_filter.apply_filter(
                 self.df_original,
-                dni=dni,
-                cliente=cliente,
-                mes=mes
+                dnis=self.selected_dnis,
+                clientes=self.selected_clientes,
+                meses=self.selected_meses
             )
             
-            # Generar resumen
+            # Obtener resumen
             summary = self.data_filter.get_filter_summary(
                 self.df_original,
                 self.df_filtered,
-                dni=dni,
-                cliente=cliente,
-                mes=mes
+                dnis=self.selected_dnis,
+                clientes=self.selected_clientes,
+                meses=self.selected_meses
             )
             
-            self.logger.info(f"Filtro aplicado:")
-            self.logger.info(f"  Total original: {summary['total_original']}")
-            self.logger.info(f"  Total filtrado: {summary['total_filtrado']}")
-            self.logger.info(f"  Porcentaje: {summary['porcentaje']}%")
+            self.logger.info(f"Registros filtrados: {len(self.df_filtered)}")
+            self.logger.info(f"Porcentaje: {summary['porcentaje']}%")
             
             # Emitir signal
             self.filter_applied.emit(len(self.df_filtered))
             
         except Exception as e:
-            error_msg = f"Error al aplicar filtro: {str(e)}"
+            error_msg = f"Error al aplicar filtros: {str(e)}"
             self.logger.error(error_msg, exception=e)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Filtro", error_msg)
     
-    def _reset_filter_criteria(self):
-        """Resetea los criterios de filtrado"""
-        self.filter_criteria = {
-            'dni': None,
-            'cliente': None,
-            'mes': None
-        }
-        self.df_filtered = None
-    
-    # === MÉTODOS PARA GENERACIÓN ===
-    
-    def set_template_path(self, path: str) -> None:
+    def clear_filters(self) -> None:
         """
-        Establece ruta de plantilla.
+        Limpia todos los filtros y resetea al estado inicial.
+        Botón "Limpiar Filtros".
+        """
+        try:
+            self.logger.info("Limpiando todos los filtros")
+            
+            # Reset estado
+            self._reset_selections()
+            self.df_filtered = None
+            
+            # Obtener DNIs nuevamente
+            if self.df_original is not None:
+                dnis = self.data_filter.get_unique_dnis(self.df_original)
+                
+                # Emitir signals - Estado inicial
+                self.list_dni_updated.emit(dnis)
+                self.list_cliente_updated.emit([])
+                self.list_mes_updated.emit([])
+                
+                # Deshabilitar todo excepto DNI
+                self.cliente_section_enabled.emit(False)
+                self.mes_section_enabled.emit(False)
+                self.apply_button_enabled.emit(False)
+            
+            self.logger.info("Filtros limpiados exitosamente")
+            
+        except Exception as e:
+            error_msg = f"Error al limpiar filtros: {str(e)}"
+            self.logger.error(error_msg, exception=e)
+            self.error_occurred.emit("Error", error_msg)
+    
+    def _reset_selections(self) -> None:
+        """Resetea todas las selecciones a listas vacías"""
+        self.selected_dnis = []
+        self.selected_clientes = []
+        self.selected_meses = []
+    
+    # === MÉTODOS PARA PLANTILLA Y SALIDA ===
+    
+    def set_template(self, path: str) -> None:
+        """
+        Establece plantilla Word.
         
         Args:
-            path: Ruta de la plantilla Word
-            
+            path: Ruta de la plantilla
         """
         try:
             self.logger.info(f"Validando plantilla: {path}")
             
-            # Validar con CertificateValidator
-            success, msg = CertificateValidator.validate_template_exists(path)
-            
-            if success:
-                self.template_path = path
-                file_size = FileUtils.get_file_size_readable(path)
-                self.logger.info(f"Plantilla válida establecida ({file_size})")
-
-            else:
-                self.logger.error(f"Plantilla inválida: {msg}")
-
+            # Validar existencia
+            if not os.path.exists(path):
+                error_msg = "La plantilla no existe"
+                self.logger.error(error_msg)
+                self.error_occurred.emit("Error de Plantilla", error_msg)
                 return False
-                
+            
+            # Validar extensión
+            if not path.lower().endswith('.docx'):
+                error_msg = "La plantilla debe ser .docx"
+                self.logger.error(error_msg)
+                self.error_occurred.emit("Error de Plantilla", error_msg)
+                return False
+            
+            self.template_path = path
+            self.logger.info(f"Plantilla establecida: {os.path.basename(path)}")
+            return True
+            
         except Exception as e:
             error_msg = f"Error al establecer plantilla: {str(e)}"
             self.logger.error(error_msg, exception=e)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Plantilla", error_msg)
             return False
     
     def set_output_folder(self, path: str) -> None:
@@ -342,7 +452,6 @@ class CertificatesController(QObject):
         
         Args:
             path: Ruta de la carpeta de salida
-            
         """
         try:
             self.logger.info(f"Validando carpeta de salida: {path}")
@@ -351,17 +460,17 @@ class CertificatesController(QObject):
             if FileUtils.ensure_dir(path):
                 self.output_folder = path
                 self.logger.info(f"Carpeta de salida establecida: {path}")
-
+                return True
             else:
                 error_msg = "No se pudo crear/acceder a la carpeta de salida"
                 self.logger.error(error_msg)
-
+                self.error_occurred.emit("Error de Carpeta", error_msg)
                 return False
                 
         except Exception as e:
             error_msg = f"Error al establecer carpeta: {str(e)}"
             self.logger.error(error_msg, exception=e)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Carpeta", error_msg)
             return False
     
     def start_generation(self, options: dict) -> None:
@@ -406,7 +515,7 @@ class CertificatesController(QObject):
         except Exception as e:
             error_msg = f"Error al iniciar generación: {str(e)}"
             self.logger.error(error_msg, exception=e)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Generación", error_msg)
     
     def _validate_before_generation(self) -> bool:
         """
@@ -419,21 +528,21 @@ class CertificatesController(QObject):
         if self.df_original is None:
             error_msg = "No hay datos cargados"
             self.logger.error(error_msg)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Validación", error_msg)
             return False
         
         # Validar plantilla
         if not self.template_path:
             error_msg = "No se ha seleccionado plantilla"
             self.logger.error(error_msg)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Validación", error_msg)
             return False
         
         # Validar carpeta de salida
         if not self.output_folder:
             error_msg = "No se ha seleccionado carpeta de salida"
             self.logger.error(error_msg)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Validación", error_msg)
             return False
         
         return True
@@ -489,7 +598,7 @@ class CertificatesController(QObject):
             error_msg: Mensaje de error
         """
         self.logger.error(f"Error en worker: {error_msg}")
-        self.error_occurred.emit(error_msg)
+        self.error_occurred.emit("Error de Worker", error_msg)
         
         # Limpiar worker
         self.worker = None
@@ -508,7 +617,9 @@ class CertificatesController(QObject):
             'total_records': len(self.df_original) if self.df_original is not None else 0,
             'filtered_records': len(self.df_filtered) if self.df_filtered is not None else 0,
             'has_filter': self.df_filtered is not None,
-            'filter_criteria': self.filter_criteria.copy(),
+            'selected_dnis': len(self.selected_dnis),
+            'selected_clientes': len(self.selected_clientes),
+            'selected_meses': len(self.selected_meses),
             'has_template': self.template_path is not None,
             'has_output_folder': self.output_folder is not None,
             'ready_to_generate': self._validate_before_generation()
@@ -528,7 +639,7 @@ class CertificatesController(QObject):
             if self.df_filtered is None:
                 error_msg = "No hay datos filtrados para exportar"
                 self.logger.error(error_msg)
-                self.error_occurred.emit(error_msg)
+                self.error_occurred.emit("Error de Exportación", error_msg)
                 return False
             
             self.logger.info(f"Exportando datos filtrados: {output_path}")
@@ -542,11 +653,11 @@ class CertificatesController(QObject):
             else:
                 error_msg = "Error al exportar datos"
                 self.logger.error(error_msg)
-                self.error_occurred.emit(error_msg)
+                self.error_occurred.emit("Error de Exportación", error_msg)
                 return False
                 
         except Exception as e:
             error_msg = f"Error al exportar: {str(e)}"
             self.logger.error(error_msg, exception=e)
-            self.error_occurred.emit(error_msg)
+            self.error_occurred.emit("Error de Exportación", error_msg)
             return False

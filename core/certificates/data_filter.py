@@ -1,6 +1,6 @@
 """
 Módulo de filtrado de datos para generación de certificados.
-Permite filtrado opcional y progresivo del DataFrame limpio.
+Permite filtrado opcional y progresivo del DataFrame limpio con selección múltiple.
 """
 
 import pandas as pd
@@ -11,6 +11,7 @@ class CertificateDataFilter:
     """
     Filtrador de datos limpio para generación de certificados.
     Filtrado opcional en cascada: DNI → Cliente → Mes
+    Soporta selección múltiple en cada nivel.
     """
     
     # Columnas requeridas para generación de certificados
@@ -68,16 +69,16 @@ class CertificateDataFilter:
     @staticmethod
     def get_unique_dnis(df: pd.DataFrame) -> List[str]:
         """
-        Retorna lista ordenada de DNIs únicos.
+        Retorna lista ordenada de DNIs únicos (sin "TODOS").
         
         Args:
             df: DataFrame con datos
             
         Returns:
-            Lista con "TODOS" seguido de DNIs únicos ordenados
+            Lista con DNIs únicos ordenados
         """
         if 'DNI' not in df.columns:
-            return ["TODOS"]
+            return []
         
         # Obtener DNIs únicos, eliminar nulos
         dnis = df['DNI'].dropna().unique().tolist()
@@ -85,30 +86,29 @@ class CertificateDataFilter:
         # Ordenar
         dnis_sorted = sorted(dnis)
         
-        # Agregar "TODOS" al inicio
-        return ["TODOS"] + dnis_sorted
+        return dnis_sorted
     
     @staticmethod
     def get_unique_clients(df: pd.DataFrame, 
-                          dni_filter: Optional[str] = None) -> List[str]:
+                          dni_filters: Optional[List[str]] = None) -> List[str]:
         """
-        Retorna clientes únicos (opcionalmente filtrados por DNI).
+        Retorna clientes únicos filtrados por DNIs seleccionados.
         
         Args:
             df: DataFrame con datos
-            dni_filter: DNI para filtrar (opcional, "TODOS" = sin filtro)
+            dni_filters: Lista de DNIs para filtrar (None = sin filtro)
             
         Returns:
-            Lista con "TODOS" seguido de clientes únicos ordenados
+            Lista con clientes únicos ordenados
         """
         if 'CLIENTE' not in df.columns:
-            return ["TODOS"]
+            return []
         
         # Aplicar filtro de DNI si corresponde
         df_filtered = df.copy()
-        if dni_filter and dni_filter != "TODOS":
+        if dni_filters and len(dni_filters) > 0:
             if 'DNI' in df.columns:
-                df_filtered = df_filtered[df_filtered['DNI'] == dni_filter]
+                df_filtered = df_filtered[df_filtered['DNI'].isin(dni_filters)]
         
         # Obtener clientes únicos
         clientes = df_filtered['CLIENTE'].dropna().unique().tolist()
@@ -116,39 +116,38 @@ class CertificateDataFilter:
         # Ordenar
         clientes_sorted = sorted(clientes)
         
-        # Agregar "TODOS" al inicio
-        return ["TODOS"] + clientes_sorted
+        return clientes_sorted
     
     @staticmethod
     def get_unique_months(df: pd.DataFrame,
-                         dni_filter: Optional[str] = None,
-                         client_filter: Optional[str] = None) -> List[str]:
+                         dni_filters: Optional[List[str]] = None,
+                         client_filters: Optional[List[str]] = None) -> List[str]:
         """
-        Retorna meses únicos (opcionalmente filtrados).
+        Retorna meses únicos filtrados por DNIs y Clientes seleccionados.
         
         Args:
             df: DataFrame con datos
-            dni_filter: DNI para filtrar (opcional, "TODOS" = sin filtro)
-            client_filter: Cliente para filtrar (opcional, "TODOS" = sin filtro)
+            dni_filters: Lista de DNIs para filtrar (None = sin filtro)
+            client_filters: Lista de Clientes para filtrar (None = sin filtro)
             
         Returns:
-            Lista con "TODOS" seguido de meses únicos ordenados cronológicamente
+            Lista con meses únicos ordenados cronológicamente
         """
         if 'MES_ANALIZADO' not in df.columns:
-            return ["TODOS"]
+            return []
         
         # Aplicar filtros progresivos
         df_filtered = df.copy()
         
         # Filtro por DNI
-        if dni_filter and dni_filter != "TODOS":
+        if dni_filters and len(dni_filters) > 0:
             if 'DNI' in df.columns:
-                df_filtered = df_filtered[df_filtered['DNI'] == dni_filter]
+                df_filtered = df_filtered[df_filtered['DNI'].isin(dni_filters)]
         
         # Filtro por Cliente
-        if client_filter and client_filter != "TODOS":
+        if client_filters and len(client_filters) > 0:
             if 'CLIENTE' in df.columns:
-                df_filtered = df_filtered[df_filtered['CLIENTE'] == client_filter]
+                df_filtered = df_filtered[df_filtered['CLIENTE'].isin(client_filters)]
         
         # Obtener meses únicos
         meses = df_filtered['MES_ANALIZADO'].dropna().unique().tolist()
@@ -156,22 +155,26 @@ class CertificateDataFilter:
         # Ordenar cronológicamente (asumiendo formato YYYY-MM)
         meses_sorted = sorted(meses)
         
-        # Agregar "TODOS" al inicio
-        return ["TODOS"] + meses_sorted
+        return meses_sorted
     
     @staticmethod
     def apply_filter(df: pd.DataFrame,
-                    dni: Optional[str] = None,
-                    cliente: Optional[str] = None,
-                    mes: Optional[str] = None) -> pd.DataFrame:
+                    dnis: Optional[List[str]] = None,
+                    clientes: Optional[List[str]] = None,
+                    meses: Optional[List[str]] = None) -> pd.DataFrame:
         """
-        Aplica filtros combinados (ignora "TODOS" y None).
+        Aplica filtros múltiples combinados (AND entre categorías, OR dentro de cada categoría).
+        
+        Ejemplo: 
+            dnis=["12345678", "87654321"] AND meses=["2025-08", "2025-09"]
+            Retorna registros donde:
+            (DNI es 12345678 OR 87654321) AND (MES es 2025-08 OR 2025-09)
         
         Args:
             df: DataFrame original
-            dni: DNI a filtrar (None o "TODOS" = sin filtro)
-            cliente: Cliente a filtrar (None o "TODOS" = sin filtro)
-            mes: Mes a filtrar (None o "TODOS" = sin filtro)
+            dnis: Lista de DNIs a filtrar (None o [] = sin filtro)
+            clientes: Lista de Clientes a filtrar (None o [] = sin filtro)
+            meses: Lista de Meses a filtrar (None o [] = sin filtro)
             
         Returns:
             DataFrame filtrado
@@ -179,17 +182,17 @@ class CertificateDataFilter:
         # Copiar DataFrame para no modificar el original
         df_result = df.copy()
         
-        # Aplicar filtro DNI
-        if dni and dni != "TODOS" and 'DNI' in df_result.columns:
-            df_result = df_result[df_result['DNI'] == dni]
+        # Aplicar filtro DNI (OR: dni1 OR dni2 OR ...)
+        if dnis and len(dnis) > 0 and 'DNI' in df_result.columns:
+            df_result = df_result[df_result['DNI'].isin(dnis)]
         
-        # Aplicar filtro Cliente
-        if cliente and cliente != "TODOS" and 'CLIENTE' in df_result.columns:
-            df_result = df_result[df_result['CLIENTE'] == cliente]
+        # Aplicar filtro Cliente (OR: cliente1 OR cliente2 OR ...)
+        if clientes and len(clientes) > 0 and 'CLIENTE' in df_result.columns:
+            df_result = df_result[df_result['CLIENTE'].isin(clientes)]
         
-        # Aplicar filtro Mes
-        if mes and mes != "TODOS" and 'MES_ANALIZADO' in df_result.columns:
-            df_result = df_result[df_result['MES_ANALIZADO'] == mes]
+        # Aplicar filtro Mes (OR: mes1 OR mes2 OR ...)
+        if meses and len(meses) > 0 and 'MES_ANALIZADO' in df_result.columns:
+            df_result = df_result[df_result['MES_ANALIZADO'].isin(meses)]
         
         return df_result
     
@@ -235,18 +238,18 @@ class CertificateDataFilter:
     @staticmethod
     def get_filter_summary(df_original: pd.DataFrame, 
                           df_filtered: pd.DataFrame,
-                          dni: Optional[str] = None,
-                          cliente: Optional[str] = None,
-                          mes: Optional[str] = None) -> dict:
+                          dnis: Optional[List[str]] = None,
+                          clientes: Optional[List[str]] = None,
+                          meses: Optional[List[str]] = None) -> dict:
         """
         Genera resumen del filtrado aplicado.
         
         Args:
             df_original: DataFrame original
             df_filtered: DataFrame después del filtro
-            dni: Filtro DNI aplicado
-            cliente: Filtro Cliente aplicado
-            mes: Filtro Mes aplicado
+            dnis: Lista de filtros DNI aplicados
+            clientes: Lista de filtros Cliente aplicados
+            meses: Lista de filtros Mes aplicados
             
         Returns:
             Diccionario con resumen del filtrado
@@ -256,8 +259,11 @@ class CertificateDataFilter:
             'total_filtrado': len(df_filtered),
             'porcentaje': round(len(df_filtered) / len(df_original) * 100, 2) if len(df_original) > 0 else 0,
             'filtros_aplicados': {
-                'dni': dni if dni and dni != "TODOS" else None,
-                'cliente': cliente if cliente and cliente != "TODOS" else None,
-                'mes': mes if mes and mes != "TODOS" else None
-            }
+                'dnis': dnis if dnis and len(dnis) > 0 else None,
+                'clientes': clientes if clientes and len(clientes) > 0 else None,
+                'meses': meses if meses and len(meses) > 0 else None
+            },
+            'cantidad_dnis': len(dnis) if dnis else 0,
+            'cantidad_clientes': len(clientes) if clientes else 0,
+            'cantidad_meses': len(meses) if meses else 0
         }
